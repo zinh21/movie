@@ -91,7 +91,7 @@ X_scaled = scaler.fit_transform(X)
 # ---------------------------
 kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
 raw_labels = kmeans.fit_predict(X_scaled)
-work["cluster_raw"] = raw_labels
+work["묶음_번호"] = raw_labels
 
 # ---------------------------
 # 묶음 기호 준비: ㉮㉯㉰㉱㉲㉳㉴ (누적 관객 평균 큰 순서)
@@ -99,18 +99,37 @@ work["cluster_raw"] = raw_labels
 symbol_pool = ["㉮", "㉯", "㉰", "㉱", "㉲", "㉳", "㉴"]
 symbol_order = symbol_pool[:n_clusters]
 
-cluster_order = (
-    work.groupby("cluster_raw")["total_audi"]
+group_order = (
+    work.groupby("묶음_번호")["total_audi"]
     .mean()
     .sort_values(ascending=False)
     .index.tolist()
 )
-symbol_map = {cid: symbol_order[i] for i, cid in enumerate(cluster_order)}
-work["cluster"] = work["cluster_raw"].map(symbol_map)
+symbol_map = {gid: symbol_order[i] for i, gid in enumerate(group_order)}
+work["묶음"] = work["묶음_번호"].map(symbol_map)
+
+# ---------------------------
+# 묶음 이름표: ㉮=흥행대작형, ㉯=반짝흥행형, ㉰=군소흥행형
+# (묶음 수가 3보다 크면 나머지는 "기타형N"으로 표시)
+# ---------------------------
+name_pool = ["흥행대작형", "반짝흥행형", "군소흥행형"]
+symbol_to_name = {}
+for i, sym in enumerate(symbol_order):
+    if i < len(name_pool):
+        symbol_to_name[sym] = name_pool[i]
+    else:
+        symbol_to_name[sym] = f"기타형{i+1}"
+
+work["묶음이름"] = work["묶음"].map(symbol_to_name)
+
+# 화면에 표시할 라벨: "㉮ (흥행대작형)" 형태로 통일
+display_label = {sym: f"{sym} ({symbol_to_name[sym]})" for sym in symbol_order}
+work["묶음표시"] = work["묶음"].map(display_label)
+display_order = [display_label[sym] for sym in symbol_order]
 
 # 색상은 자동 배정 (n_clusters 개수만큼)
 palette = px.colors.qualitative.Set2
-color_map = {sym: palette[i % len(palette)] for i, sym in enumerate(symbol_order)}
+color_map = {display_label[sym]: palette[i % len(palette)] for i, sym in enumerate(symbol_order)}
 
 # ---------------------------
 # 2차원 산점도
@@ -131,11 +150,11 @@ fig_2d = px.scatter(
     work,
     x=x_col_2d,
     y=y_col_2d,
-    color="cluster",
-    category_orders={"cluster": symbol_order},
+    color="묶음표시",
+    category_orders={"묶음표시": display_order},
     color_discrete_map=color_map,
     hover_name="movieNm",
-    labels={x_col_2d: x_label_2d, y_col_2d: y_label_2d, "cluster": "묶음"},
+    labels={x_col_2d: x_label_2d, y_col_2d: y_label_2d, "묶음표시": "묶음"},
     title=f"{x_label_2d} vs {y_label_2d}",
 )
 st.plotly_chart(fig_2d, use_container_width=True)
@@ -167,11 +186,11 @@ else:
         x=x_col_3d,
         y=y_col_3d,
         z=z_col_3d,
-        color="cluster",
-        category_orders={"cluster": symbol_order},
+        color="묶음표시",
+        category_orders={"묶음표시": display_order},
         color_discrete_map=color_map,
         hover_name="movieNm",
-        labels={x_col_3d: x_label_3d, y_col_3d: y_label_3d, z_col_3d: z_label_3d, "cluster": "묶음"},
+        labels={x_col_3d: x_label_3d, y_col_3d: y_label_3d, z_col_3d: z_label_3d, "묶음표시": "묶음"},
         title=f"{x_label_3d} · {y_label_3d} · {z_label_3d}",
     )
     fig_3d.update_traces(marker=dict(size=3))
@@ -188,7 +207,7 @@ work["10위권 일수"] = work["days_top10"]
 work["롱런 지수(원본)"] = work["longrun_index"]
 
 summary = (
-    work.groupby("cluster")
+    work.groupby("묶음표시")
     .agg(
         편수=("movieNm", "count"),
         평균_스크린수=("스크린 수", "mean"),
@@ -196,53 +215,20 @@ summary = (
         평균_10위권일수=("10위권 일수", "mean"),
         평균_롱런지수=("롱런 지수(원본)", "mean"),
     )
-    .reindex(symbol_order)
+    .reindex(display_order)
     .round(2)
 )
 st.dataframe(summary, use_container_width=True)
-
-# ---------------------------
-# 묶음별 특징 자동 이름 붙이기
-# ---------------------------
-st.subheader("5️⃣-1 묶음별 특징 이름표 (자동 생성)")
-
-overall_mean = {
-    "평균_스크린수": work["스크린 수"].mean(),
-    "평균_누적관객": work["누적 관객"].mean(),
-    "평균_10위권일수": work["10위권 일수"].mean(),
-    "평균_롱런지수": work["롱런 지수(원본)"].mean(),
-}
-
-def make_label(row):
-    high_audi = row["평균_누적관객"] >= overall_mean["평균_누적관객"]
-    high_scrn = row["평균_스크린수"] >= overall_mean["평균_스크린수"]
-    high_days = row["평균_10위권일수"] >= overall_mean["평균_10위권일수"]
-    high_long = row["평균_롱런지수"] >= overall_mean["평균_롱런지수"]
-
-    if high_audi and high_scrn and high_days:
-        return "흥행 대작형"
-    elif high_long and not high_audi:
-        return "입소문 롱런형"
-    elif high_audi and not high_scrn:
-        return "입소문 대박형"
-    elif not high_audi and not high_scrn and not high_days:
-        return "단기 소규모형"
-    else:
-        return "중간 성적형"
-
-summary_with_label = summary.copy()
-summary_with_label["특징 이름표"] = summary_with_label.apply(make_label, axis=1)
-st.dataframe(summary_with_label, use_container_width=True)
 
 # ---------------------------
 # 묶음별 누적 관객 상위 5편
 # ---------------------------
 st.subheader("6️⃣ 묶음별 누적 관객 상위 5편")
 
-for symbol in symbol_order:
-    st.markdown(f"**{symbol} 묶음**")
+for disp in display_order:
+    st.markdown(f"**{disp} 묶음**")
     top5 = (
-        work[work["cluster"] == symbol]
+        work[work["묶음표시"] == disp]
         .sort_values("total_audi", ascending=False)
         .head(5)["movieNm"]
         .tolist()
