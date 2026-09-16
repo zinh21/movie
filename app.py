@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 import plotly.express as px
+import plotly.graph_objects as go
 
 # ---------------------------
 # 페이지 설정 (제목 + 아이콘, 브라우저 탭 표시)
@@ -27,7 +29,6 @@ total_count = len(df)
 # ---------------------------
 # 파생 변수 만들기
 # ---------------------------
-# 필요한 원본 열: first_scrn, total_audi, first_week_audi, days_in_top10
 work = df.copy()
 
 # 결측치 및 first_week_audi == 0 인 행 제외
@@ -73,35 +74,48 @@ if len(selected_labels) < 2:
 selected_cols = [attr_map[label] for label in selected_labels]
 
 # ---------------------------
-# 표준화 + K-means (난수 고정)
+# 묶음 수 선택 (2~7, 기본 3)
+# ---------------------------
+st.subheader("2️⃣ 묶음 수 선택")
+n_clusters = st.slider("묶음 수를 선택하세요.", min_value=2, max_value=7, value=3, step=1)
+
+# ---------------------------
+# 표준화
 # ---------------------------
 X = work[selected_cols].values
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+# ---------------------------
+# 선택한 묶음 수로 K-means 실행 (난수 고정)
+# ---------------------------
+kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
 raw_labels = kmeans.fit_predict(X_scaled)
 work["cluster_raw"] = raw_labels
 
 # ---------------------------
-# 묶음 번호 -> ㉮㉯㉰ (누적 관객 평균 큰 순서)
+# 묶음 기호 준비: ㉮㉯㉰㉱㉲㉳㉴ (누적 관객 평균 큰 순서)
 # ---------------------------
+symbol_pool = ["㉮", "㉯", "㉰", "㉱", "㉲", "㉳", "㉴"]
+symbol_order = symbol_pool[:n_clusters]
+
 cluster_order = (
     work.groupby("cluster_raw")["total_audi"]
     .mean()
     .sort_values(ascending=False)
     .index.tolist()
 )
-symbol_map = {cluster_order[0]: "㉮", cluster_order[1]: "㉯", cluster_order[2]: "㉰"}
+symbol_map = {cid: symbol_order[i] for i, cid in enumerate(cluster_order)}
 work["cluster"] = work["cluster_raw"].map(symbol_map)
 
-symbol_order = ["㉮", "㉯", "㉰"]
-color_map = {"㉮": "#EF553B", "㉯": "#636EFA", "㉰": "#00CC96"}
+# 색상은 자동 배정 (n_clusters 개수만큼)
+palette = px.colors.qualitative.Set2
+color_map = {sym: palette[i % len(palette)] for i, sym in enumerate(symbol_order)}
 
 # ---------------------------
 # 2차원 산점도
 # ---------------------------
-st.subheader("2️⃣ 2차원 산점도")
+st.subheader("3️⃣ 2차원 산점도")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -129,7 +143,7 @@ st.plotly_chart(fig_2d, use_container_width=True)
 # ---------------------------
 # 3차원 산점도
 # ---------------------------
-st.subheader("3️⃣ 3차원 산점도")
+st.subheader("4️⃣ 3차원 산점도")
 
 if len(selected_labels) < 3:
     st.info("ℹ️ 3차원 산점도를 그리려면 속성을 3개 이상 선택해야 합니다.")
@@ -166,9 +180,8 @@ else:
 # ---------------------------
 # 묶음별 편수 및 평균 (원래 단위)
 # ---------------------------
-st.subheader("4️⃣ 묶음별 편수 및 평균 (원래 단위)")
+st.subheader("5️⃣ 묶음별 편수 및 평균 (원래 단위)")
 
-# 원래 단위로 되돌리기 위한 컬럼 준비
 work["스크린 수"] = work["first_scrn"]
 work["누적 관객"] = work["total_audi"]
 work["10위권 일수"] = work["days_top10"]
@@ -189,9 +202,42 @@ summary = (
 st.dataframe(summary, use_container_width=True)
 
 # ---------------------------
+# 묶음별 특징 자동 이름 붙이기
+# ---------------------------
+st.subheader("5️⃣-1 묶음별 특징 이름표 (자동 생성)")
+
+overall_mean = {
+    "평균_스크린수": work["스크린 수"].mean(),
+    "평균_누적관객": work["누적 관객"].mean(),
+    "평균_10위권일수": work["10위권 일수"].mean(),
+    "평균_롱런지수": work["롱런 지수(원본)"].mean(),
+}
+
+def make_label(row):
+    high_audi = row["평균_누적관객"] >= overall_mean["평균_누적관객"]
+    high_scrn = row["평균_스크린수"] >= overall_mean["평균_스크린수"]
+    high_days = row["평균_10위권일수"] >= overall_mean["평균_10위권일수"]
+    high_long = row["평균_롱런지수"] >= overall_mean["평균_롱런지수"]
+
+    if high_audi and high_scrn and high_days:
+        return "흥행 대작형"
+    elif high_long and not high_audi:
+        return "입소문 롱런형"
+    elif high_audi and not high_scrn:
+        return "입소문 대박형"
+    elif not high_audi and not high_scrn and not high_days:
+        return "단기 소규모형"
+    else:
+        return "중간 성적형"
+
+summary_with_label = summary.copy()
+summary_with_label["특징 이름표"] = summary_with_label.apply(make_label, axis=1)
+st.dataframe(summary_with_label, use_container_width=True)
+
+# ---------------------------
 # 묶음별 누적 관객 상위 5편
 # ---------------------------
-st.subheader("5️⃣ 묶음별 누적 관객 상위 5편")
+st.subheader("6️⃣ 묶음별 누적 관객 상위 5편")
 
 for symbol in symbol_order:
     st.markdown(f"**{symbol} 묶음**")
@@ -203,3 +249,61 @@ for symbol in symbol_order:
     )
     for i, name in enumerate(top5, start=1):
         st.write(f"{i}. {name}")
+
+# ---------------------------
+# 엘보우 방법: 묶음 수 1~7에 대한 WCSS 계산
+# ---------------------------
+st.subheader("7️⃣ 묶음 수에 따른 오차제곱합(WCSS) 변화")
+
+k_range = list(range(1, 8))
+wcss_list = []
+for k in k_range:
+    km = KMeans(n_clusters=k, random_state=42, n_init=10)
+    km.fit(X_scaled)
+    wcss_list.append(km.inertia_)
+
+fig_elbow = go.Figure()
+fig_elbow.add_trace(
+    go.Scatter(
+        x=k_range,
+        y=wcss_list,
+        mode="lines+markers",
+        name="WCSS",
+    )
+)
+fig_elbow.add_vline(x=n_clusters, line_dash="dash", line_color="red")
+fig_elbow.update_layout(
+    xaxis_title="묶음 수",
+    yaxis_title="오차제곱합(WCSS)",
+    title="묶음 수에 따른 오차제곱합 변화",
+)
+st.plotly_chart(fig_elbow, use_container_width=True)
+
+# ---------------------------
+# WCSS 감소량 표
+# ---------------------------
+st.subheader("8️⃣ 묶음 수별 WCSS 및 감소량")
+
+decrease_list = [None]  # 첫 줄은 비교 대상 없음
+for i in range(1, len(wcss_list)):
+    decrease_list.append(wcss_list[i - 1] - wcss_list[i])
+
+wcss_table = pd.DataFrame(
+    {
+        "묶음 수": k_range,
+        "WCSS": [round(v, 2) for v in wcss_list],
+        "직전 대비 감소량": [round(v, 2) if v is not None else None for v in decrease_list],
+    }
+)
+st.dataframe(wcss_table, use_container_width=True)
+
+# ---------------------------
+# 실루엣 점수 (선택한 묶음 수 기준)
+# ---------------------------
+st.subheader("9️⃣ 실루엣 점수")
+
+if n_clusters >= 2:
+    sil_score = silhouette_score(X_scaled, raw_labels)
+    st.write(f"현재 묶음 수({n_clusters}개)의 실루엣 점수: **{sil_score:.3f}** (−1 ~ 1, 1에 가까울수록 묶음이 뚜렷함)")
+else:
+    st.info("ℹ️ 실루엣 점수는 묶음 수가 2 이상일 때만 계산할 수 있습니다.")
